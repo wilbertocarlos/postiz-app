@@ -3,6 +3,7 @@ import { EmailInterface } from '@gitroom/nestjs-libraries/emails/email.interface
 import { ResendProvider } from '@gitroom/nestjs-libraries/emails/resend.provider';
 import { EmptyProvider } from '@gitroom/nestjs-libraries/emails/empty.provider';
 import { NodeMailerProvider } from '@gitroom/nestjs-libraries/emails/node.mailer.provider';
+import { BrevoProvider } from '@gitroom/nestjs-libraries/emails/brevo.provider';
 import { TemporalService } from 'nestjs-temporal-core';
 import { timer } from '@gitroom/helpers/utils/timer';
 
@@ -29,6 +30,8 @@ export class EmailService {
         return new ResendProvider();
       case 'nodemailer':
         return new NodeMailerProvider();
+      case 'brevo':
+        return new BrevoProvider();
       default:
         return new EmptyProvider();
     }

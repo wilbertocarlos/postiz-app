@@ -1,11 +1,12 @@
 ---
-name: "Build Containers"
+name: 'Build Containers'
 
 on:
   workflow_dispatch:
   push:
     tags:
       - '*'
+      - '!mpo-*'
 
 jobs:
   build-containers-common:
@@ -76,14 +77,14 @@ jobs:
           # Verify the architecture images
           echo "Verifying AMD64 image:"
           docker buildx imagetools inspect ghcr.io/gitroomhq/postiz-app:${{ env.CONTAINERVER }}-amd64
-          
+
           echo "Verifying ARM64 image:"
           docker buildx imagetools inspect ghcr.io/gitroomhq/postiz-app:${{ env.CONTAINERVER }}-arm64
-          
+
           # Try to remove any existing manifests first
           docker manifest rm ghcr.io/gitroomhq/postiz-app:${{ env.CONTAINERVER }} || true
           docker manifest rm ghcr.io/gitroomhq/postiz-app:latest || true
-          
+
           # Create and push the version-specific manifest
           docker manifest create ghcr.io/gitroomhq/postiz-app:${{ env.CONTAINERVER }} \
             --amend ghcr.io/gitroomhq/postiz-app:${{ env.CONTAINERVER }}-amd64 \

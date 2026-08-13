@@ -1,0 +1,54 @@
+name: Check MPO upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 7 1 * *'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare upstream revision
+        id: upstream
+        shell: bash
+        run: |
+          current="$(tr -d '[:space:]' < integrations/wordpress-postiz/UPSTREAM_BASE)"
+          latest="$(git ls-remote https://github.com/gitroomhq/postiz-app.git refs/heads/main | cut -f1)"
+          test -n "$current"
+          test -n "$latest"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          if [[ "$current" != "$latest" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open maintenance issue
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.upstream.outputs.current }}
+          LATEST: ${{ steps.upstream.outputs.latest }}
+        shell: bash
+        run: |
+          existing="$(gh issue list --state open --search 'Postiz upstream update available in:title' --json number --jq length)"
+          if [[ "$existing" != "0" ]]; then
+            exit 0
+          fi
+
+          gh issue create \
+            --title "Postiz upstream update available (${LATEST:0:7})" \
+            --body "Upstream moved from \`${CURRENT:0:7}\` to \`${LATEST:0:7}\`.
+
+          - Rebase the MPO changes onto the new upstream commit.
+          - Run the LinkedIn metadata tests and both n8n import checks.
+          - Verify ordinary LinkedIn text, image, video, and carousel posts.
+          - Publish a new immutable \`mpo-<upstream>.N\` image tag.
+          - Test deployment and rollback in Coolify.
+          - Update \`integrations/wordpress-postiz/UPSTREAM_BASE\` only after validation."
