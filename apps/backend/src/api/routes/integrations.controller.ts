@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -32,6 +33,10 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import {
+  extractFirstUrl,
+  fetchLinkedinArticleMetadata,
+} from '@gitroom/nestjs-libraries/integrations/social/linkedin.article.metadata';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -42,6 +47,21 @@ export class IntegrationsController {
     private _postService: PostsService,
     private _refreshIntegrationService: RefreshIntegrationService
   ) {}
+
+  @Post('/link-preview')
+  async linkPreview(@Body() body: { url?: string; content?: string }) {
+    const url = body.url || extractFirstUrl(body.content || '');
+    if (!url) {
+      throw new BadRequestException('No URL found for link preview');
+    }
+    try {
+      return await fetchLinkedinArticleMetadata(url);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Could not load link preview'
+      );
+    }
+  }
 
   @Post('/provider/:id/connect')
   @CheckPolicies([AuthorizationActions.Create, Sections.CHANNEL])
