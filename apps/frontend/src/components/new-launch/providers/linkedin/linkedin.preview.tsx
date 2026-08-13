@@ -3,8 +3,17 @@ import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { useMediaDirectory } from '@gitroom/react/helpers/use.media.directory';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { textSlicer } from '@gitroom/helpers/utils/count.length';
-import { FC } from 'react';
+import { FC, useEffect, useState } from 'react';
 import { VideoOrImage } from '@gitroom/react/helpers/video.or.image';
+import { useSettings } from '@gitroom/frontend/components/launches/helpers/use.values';
+import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+
+type LinkPreview = {
+  source: string;
+  title: string;
+  description: string;
+  image: string;
+};
 
 const Icons = () => {
   return (
@@ -248,8 +257,12 @@ export const LinkedinPreview: FC<{
   maximumCharacters?: number;
 }> = (props) => {
   const { value: topValue, integration } = useIntegration();
+  const { watch } = useSettings();
+  const linkPreviewEnabled = watch('link_preview');
   const current = useLaunchStore((state) => state.current);
   const mediaDir = useMediaDirectory();
+  const fetch = useFetch();
+  const [linkPreview, setLinkPreview] = useState<LinkPreview>();
 
   const renderContent = topValue.map((p) => {
     const newContent = stripHtmlValidation(
@@ -283,6 +296,38 @@ export const LinkedinPreview: FC<{
 
     return { text: finalValue, images: p.image };
   });
+
+  useEffect(() => {
+    if (!linkPreviewEnabled || !topValue?.[0]?.content) {
+      setLinkPreview(undefined);
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await fetch('/integrations/link-preview', {
+          method: 'POST',
+          body: JSON.stringify({ content: topValue[0].content }),
+          signal: abortController.signal,
+        });
+        if (!response.ok) throw new Error('Could not load link preview');
+        setLinkPreview(await response.json());
+      } catch {
+        if (!abortController.signal.aborted) setLinkPreview(undefined);
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeout);
+      abortController.abort();
+    };
+  }, [fetch, linkPreviewEnabled, topValue?.[0]?.content]);
+
+  const uploadedPreviewImage = renderContent?.[0]?.images?.[0]?.path
+    ? mediaDir.set(renderContent[0].images[0].path)
+    : undefined;
+  const cardImage = uploadedPreviewImage || linkPreview?.image;
   return (
     <div className="py-[15px] flex flex-col px-[15px] w-full gap-[20px] bg-bgLinkedin rounded-[12px]">
       <div className="flex gap-[8px]">
@@ -323,7 +368,36 @@ export const LinkedinPreview: FC<{
           __html: renderContent?.[0]?.text,
         }}
       />
-      {!!renderContent?.[0]?.images?.length && (
+      {linkPreviewEnabled && linkPreview && (
+        <a
+          href={linkPreview.source}
+          target="_blank"
+          rel="noreferrer"
+          className="-mx-[15px] border-y border-borderLinkedin bg-white text-[#191919]"
+        >
+          {cardImage && (
+            <img
+              src={cardImage}
+              alt=""
+              className="block h-[260px] w-full object-cover"
+            />
+          )}
+          <div className="px-[15px] py-[12px]">
+            <div className="text-[14px] font-[600] leading-[20px]">
+              {linkPreview.title}
+            </div>
+            {!!linkPreview.description && (
+              <div className="mt-[3px] line-clamp-2 text-[12px] font-[400] leading-[17px] text-[#666666]">
+                {linkPreview.description}
+              </div>
+            )}
+            <div className="mt-[5px] text-[11px] text-[#666666]">
+              {new URL(linkPreview.source).hostname}
+            </div>
+          </div>
+        </a>
+      )}
+      {!linkPreviewEnabled && !!renderContent?.[0]?.images?.length && (
         <div className="h-[280px] -mx-[15px] overflow-hidden flex">
           {renderContent?.[0]?.images.map((image, index) => (
             <a

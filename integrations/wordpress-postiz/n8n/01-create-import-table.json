@@ -1,0 +1,51 @@
+{
+  "id": "P6acxE9mzr2V7nQk",
+  "name": "Postiz - Create article import table",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "28e4fb4a-645b-4f8c-9dba-aeb7151d4f63",
+      "name": "Run once",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "postiz_article_imports",
+        "columns": {
+          "column": [
+            { "name": "event_key", "type": "string" },
+            { "name": "site_id", "type": "string" },
+            { "name": "post_id", "type": "number" },
+            { "name": "canonical_url", "type": "string" },
+            { "name": "postiz_post_id", "type": "string" },
+            { "name": "status", "type": "string" },
+            { "name": "attempts", "type": "number" },
+            { "name": "last_error", "type": "string" },
+            { "name": "created_at", "type": "date" },
+            { "name": "updated_at", "type": "date" }
+          ]
+        },
+        "options": { "createIfNotExists": true }
+      },
+      "id": "477373ce-2873-4f40-b8ac-7f43837e3562",
+      "name": "Create import table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [240, 0]
+    }
+  ],
+  "connections": {
+    "Run once": {
+      "main": [[{ "node": "Create import table", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "76288d73-fbb0-45dc-aa65-ff127492a4be",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}

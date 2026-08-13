@@ -20,6 +20,13 @@ const LinkedInSettings = () => {
     <div className="mb-[20px]">
       <Checkbox
         variant="hollow"
+        label={t('linkedin_link_preview', 'Link card')}
+        {...register('link_preview', {
+          value: false,
+        })}
+      />
+      <Checkbox
+        variant="hollow"
         label={t('post_as_images_carousel', 'Post as images carousel')}
         {...register('post_as_images_carousel', {
           value: false,
