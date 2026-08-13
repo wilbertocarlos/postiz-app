@@ -21,6 +21,18 @@ import { LinkedinDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-sett
 import imageToPDF from 'image-to-pdf';
 import { Readable } from 'stream';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import {
+  extractFirstUrl,
+  fetchLinkedinArticleImage,
+  fetchLinkedinArticleMetadata,
+} from '@gitroom/nestjs-libraries/integrations/social/linkedin.article.metadata';
+
+type LinkedinArticleContent = {
+  source: string;
+  title: string;
+  description: string;
+  thumbnail?: string;
+};
 
 @Rules(
   'LinkedIn can have maximum one attachment when selecting video, when choosing a carousel on LinkedIn minimum amount of attachment must be two, and only pictures, if uploading a video, LinkedIn can have only one attachment'
@@ -54,6 +66,15 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const [firstPost, ...restPosts] = posts ?? [];
 
     if (
+      this.assetBoolean(vals?.link_preview) &&
+      (this.assetBoolean(vals?.post_as_images_carousel) ||
+        (firstPost?.length ?? 0) > 1 ||
+        firstPost?.some((p) => (p?.path?.indexOf?.('mp4') ?? -1) > -1))
+    ) {
+      return 'A link card supports at most one image and cannot be combined with video or a carousel.';
+    }
+
+    if (
       this.assetBoolean(vals?.post_as_images_carousel) &&
       ((firstPost?.length ?? 0) < 2 ||
         firstPost?.some((p) => (p?.path?.indexOf?.('mp4') ?? -1) > -1))
@@ -85,7 +106,10 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
-    if (body.indexOf('resource is forbidden') > -1 || body.indexOf('Service Unavailable') > -1) {
+    if (
+      body.indexOf('resource is forbidden') > -1 ||
+      body.indexOf('Service Unavailable') > -1
+    ) {
       return {
         type: 'retry',
         value: 'Resource is forbidden',
@@ -538,10 +562,10 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
 
     // Create a PDF sized to the largest image; it fills the page,
     // smaller images are fitted and centered within the same dimensions
-    const pdfStream = imageToPDF(
-      imageBuffers,
-      [largest.width, largest.height]
-    ) as unknown as Readable;
+    const pdfStream = imageToPDF(imageBuffers, [
+      largest.width,
+      largest.height,
+    ]) as unknown as Readable;
     const pdfBuffer = await this.streamToBuffer(pdfStream);
 
     // Replace the first post's media with the single PDF
@@ -619,16 +643,16 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     }, {} as Record<string, string[]>);
   }
 
-  private async prepareMediaBuffer(mediaUrl: string): Promise<Buffer> {
-    const isVideo = hasExtension(mediaUrl, 'mp4');
-    const isGif = lookup(mediaUrl) === 'image/gif';
+  private async prepareMediaBuffer(media: string | Buffer): Promise<Buffer> {
+    const isVideo = typeof media === 'string' && hasExtension(media, 'mp4');
+    const isGif = typeof media === 'string' && lookup(media) === 'image/gif';
 
     // GIFs and videos pass through untouched (sharp would break animation).
     if (isVideo || isGif) {
-      return Buffer.from(await readOrFetch(mediaUrl));
+      return Buffer.from(await readOrFetch(media as string));
     }
 
-    const mime = lookup(mediaUrl);
+    const mime = typeof media === 'string' ? lookup(media) : undefined;
     // PNG and JPEG (covers both .jpg and .jpeg) keep their original format;
     // anything else (webp, tiff, ...) is converted to jpeg for compatibility.
     const keepFormat = mime === 'image/png' || mime === 'image/jpeg';
@@ -640,7 +664,12 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     // DISABLE_IMAGE_COMPRESSION=true, where the frontend no longer shrinks
     // uploads and full-size images reach LinkedIn directly. Do not remove it on
     // the assumption that the frontend compression already caps dimensions.
-    const pipeline = sharp(await readOrFetch(mediaUrl), { animated: false }).resize({
+    const pipeline = sharp(
+      Buffer.isBuffer(media) ? media : await readOrFetch(media),
+      {
+        animated: false,
+      }
+    ).resize({
       width: 6000,
       height: 6000,
       fit: 'inside',
@@ -650,7 +679,20 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     return await (keepFormat ? pipeline : pipeline.toFormat('jpeg')).toBuffer();
   }
 
-  private buildPostContent(isPdf: boolean, mediaIds: string[], pdfTitle?: string) {
+  private buildPostContent(
+    isPdf: boolean,
+    mediaIds: string[],
+    pdfTitle?: string,
+    article?: LinkedinArticleContent
+  ) {
+    if (article) {
+      return {
+        content: {
+          article,
+        },
+      };
+    }
+
     if (mediaIds.length === 0) {
       return {};
     }
@@ -681,7 +723,8 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     message: string,
     mediaIds: string[],
     isPdf: boolean,
-    pdfTitle?: string
+    pdfTitle?: string,
+    article?: LinkedinArticleContent
   ) {
     const author =
       type === 'personal' ? `urn:li:person:${id}` : `urn:li:organization:${id}`;
@@ -695,9 +738,56 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
         targetEntities: [] as string[],
         thirdPartyDistributionChannels: [] as string[],
       },
-      ...this.buildPostContent(isPdf, mediaIds, pdfTitle),
+      ...this.buildPostContent(isPdf, mediaIds, pdfTitle, article),
       lifecycleState: 'PUBLISHED',
       isReshareDisabledByAuthor: false,
+    };
+  }
+
+  private async buildArticleContent(
+    message: string,
+    accessToken: string,
+    id: string,
+    type: 'company' | 'personal',
+    uploadedThumbnail?: string
+  ): Promise<LinkedinArticleContent> {
+    const url = extractFirstUrl(message);
+    if (!url) {
+      throw new Error('Link preview is enabled, but the post has no URL');
+    }
+
+    const metadata = await fetchLinkedinArticleMetadata(url);
+    let thumbnail: string | undefined;
+    if (
+      uploadedThumbnail &&
+      !uploadedThumbnail.includes(':video:') &&
+      !uploadedThumbnail.includes(':document:')
+    ) {
+      thumbnail = uploadedThumbnail;
+    } else if (metadata.image) {
+      const imageBuffer = await this.prepareMediaBuffer(
+        await fetchLinkedinArticleImage(metadata.image)
+      );
+      thumbnail = await this.uploadPicture(
+        metadata.image,
+        accessToken,
+        id,
+        imageBuffer,
+        type
+      );
+    }
+
+    if (!thumbnail) {
+      throw new Error(
+        'Link preview is enabled, but the article has no usable thumbnail'
+      );
+    }
+
+    return {
+      source: metadata.source,
+      title: metadata.title,
+      description: metadata.description,
+      ...(thumbnail ? { thumbnail } : {}),
     };
   }
 
@@ -712,6 +802,27 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const pdfTitle = isPdf
       ? firstPost.settings?.carousel_name || 'slides'
       : undefined;
+    let article: LinkedinArticleContent | undefined;
+    if (!isPdf && this.assetBoolean(firstPost.settings?.link_preview)) {
+      try {
+        article = await this.buildArticleContent(
+          firstPost.message,
+          accessToken,
+          id,
+          type,
+          mediaIds.length === 1 ? mediaIds[0] : undefined
+        );
+      } catch (error) {
+        throw new BadBody(
+          this.identifier,
+          error instanceof Error
+            ? error.message
+            : 'Could not build link preview',
+          JSON.stringify({ message: firstPost.message }),
+          'LinkedIn link preview could not be created'
+        );
+      }
+    }
 
     const postPayload = this.createLinkedInPostPayload(
       id,
@@ -719,7 +830,8 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       firstPost.message,
       mediaIds,
       isPdf,
-      pdfTitle
+      pdfTitle,
+      article
     );
 
     const response = await this.fetch(`https://api.linkedin.com/rest/posts`, {
@@ -762,9 +874,9 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       {
         method: 'POST',
         headers: {
-        'LinkedIn-Version': '202306',
-        'X-Restli-Protocol-Version': '2.0.0',
-        'Content-Type': 'application/json',
+          'LinkedIn-Version': '202306',
+          'X-Restli-Protocol-Version': '2.0.0',
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
