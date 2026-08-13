@@ -1,0 +1,537 @@
+{
+  "id": "K4w9rT2yQ8mL6bNz",
+  "name": "WordPress articles to Postiz drafts",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wordpress-postiz-article",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "11c23ad9-733c-4802-a333-b3d58db3e091",
+      "name": "WordPress webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-1080, -220],
+      "webhookId": "ec5c9067-694d-4d0c-9e94-8a29b10fcdf4"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const crypto = require('crypto');\nconst headers = $json.headers || {};\nconst body = $json.body || {};\nconst timestamp = String(headers['x-postiz-timestamp'] || '');\nconst supplied = String(headers['x-postiz-signature'] || '').replace(/^sha256=/, '');\nconst secret = $env.WORDPRESS_POSTIZ_WEBHOOK_SECRET;\nif (!secret || !timestamp || !supplied) throw new Error('Missing webhook authentication');\nif (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) throw new Error('Expired webhook timestamp');\nconst expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${JSON.stringify(body)}`).digest('hex');\nconst left = Buffer.from(expected, 'hex');\nconst right = Buffer.from(supplied, 'hex');\nif (left.length !== right.length || !crypto.timingSafeEqual(left, right)) throw new Error('Invalid webhook signature');\nreturn { json: body };"
+      },
+      "id": "a21fb8ff-5fbb-44d6-b538-50d32219a0e1",
+      "name": "Verify HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-840, -220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"accepted\":true}",
+        "options": { "responseCode": 202 }
+      },
+      "id": "4ce1b807-2509-4e48-b2db-b61a408d9f24",
+      "name": "Accept webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [-600, -220]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const article = $json;\nif (!article.site_id || !article.post_id || !article.canonical_url || !article.title) throw new Error('Incomplete article payload');\nreturn { json: { ...article, event_key: `${article.site_id}:${article.post_id}` } };"
+      },
+      "id": "1648a31d-2453-4857-a122-cc17f4444be6",
+      "name": "Normalize webhook article",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-360, -220]
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      },
+      "id": "0cf4fce0-5634-478d-b87c-4528a49ab01f",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [-1080, 180]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WORDPRESS_SITE_URL.replace(/\\/$/, '') + '/wp-json/wp/v2/posts?status=publish&orderby=date&order=desc&per_page=100&_embed=wp:featuredmedia&after=' + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "c145f90c-e52c-4a91-b074-dbe6b913c08e",
+      "name": "Fetch recent WordPress articles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-840, 180],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.all().map(item => item.json);\nconst posts = raw.length === 1 && Array.isArray(raw[0]) ? raw[0] : raw;\nreturn posts.map(post => {\n  const canonical = post.link;\n  const media = post._embedded?.['wp:featuredmedia']?.[0]?.source_url || '';\n  const siteId = $env.WORDPRESS_SITE_ID || new URL(canonical).hostname.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();\n  return { json: {\n    site_id: siteId,\n    post_id: post.id,\n    canonical_url: canonical,\n    title: String(post.title?.rendered || '').replace(/<[^>]+>/g, ''),\n    excerpt: String(post.excerpt?.rendered || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim(),\n    featured_image_url: media,\n    published_at: post.date,\n    event_key: `${siteId}:${post.id}`\n  } };\n});"
+      },
+      "id": "4c3c7dc2-3cb0-4535-bbf6-acf177ccfb3b",
+      "name": "Normalize polled articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, 180]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "postiz_article_imports",
+          "mode": "name"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "event_key",
+              "condition": "eq",
+              "keyValue": "={{ $json.event_key }}"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "34ef6620-5a2f-4603-bba0-6e8f0bf830d3",
+      "name": "Get import state",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [-120, 0],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "8f038295-e7cb-49e2-8172-08ca336a4bf6",
+      "name": "Merge import state",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [120, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status || '' }}",
+              "rightValue": "created",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dc9aed07-9393-4e40-8133-41cf6f2396f3",
+      "name": "Needs processing",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [360, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const excerpt = String($json.excerpt || '').replace(/\\s+/g, ' ').trim();\nlet summary = excerpt.slice(0, 240);\nif (excerpt.length > 240) summary = summary.replace(/\\s+\\S*$/, '').trim();\nconst content = `${$json.title}\\n\\n${summary}\\n\\nLees het volledige artikel: ${$json.canonical_url}`;\nconst now = new Date();\nconst local = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Amsterdam', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now).reduce((a, p) => ({ ...a, [p.type]: p.value }), {});\nlet cursor = new Date(Date.UTC(Number(local.year), Number(local.month) - 1, Number(local.day) + 1, 10));\nwhile ([0, 6].includes(cursor.getUTCDay())) cursor.setUTCDate(cursor.getUTCDate() + 1);\nconst desiredUtc = Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), cursor.getUTCDate(), 10);\nconst zonedParts = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Amsterdam', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(desiredUtc)).reduce((a, p) => ({ ...a, [p.type]: p.value }), {});\nconst representedUtc = Date.UTC(Number(zonedParts.year), Number(zonedParts.month) - 1, Number(zonedParts.day), Number(zonedParts.hour), Number(zonedParts.minute), Number(zonedParts.second));\nconst scheduled = new Date(desiredUtc - (representedUtc - desiredUtc)).toISOString();\nreturn { json: { ...$json, summary, content, scheduled } };"
+      },
+      "id": "1db3a97f-45a1-44ba-a5c6-603119bcc67f",
+      "name": "Prepare draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.featured_image_url || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "63e48a14-3a5f-4840-93f7-49fdce718254",
+      "name": "Has featured image",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [840, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://postiz.multiplusonline.nl/api/public/v1/upload-from-url",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { url: $json.featured_image_url } }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "c5ec75ef-4b84-4488-888a-d68cc82188ae",
+      "name": "Upload featured image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1080, -100],
+      "credentials": { "httpHeaderAuth": { "name": "Postiz Public API" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.path || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ef72c4be-d43d-46ef-939d-8954440d5c7e",
+      "name": "Image upload succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1200, -100]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Postiz Info <noreply@multiplusonline.nl>",
+        "toEmail": "={{ $env.POSTIZ_ALERT_EMAIL }}",
+        "subject": "={{ 'Postiz artikel zonder afbeelding: ' + $('Prepare draft').item.json.title }}",
+        "emailFormat": "text",
+        "text": "={{ 'Het concept wordt zonder thumbnail gemaakt.\\n\\nArtikel: ' + $('Prepare draft').item.json.canonical_url + '\\nUitvoering: ' + $execution.id }}",
+        "options": {}
+      },
+      "id": "55a64db4-cc70-483d-bbe9-ee8712374758",
+      "name": "Warn about missing image",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1080, 140],
+      "credentials": { "smtp": { "name": "Brevo SMTP" } },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const article = $('Prepare draft').item.json;\nconst uploaded = $json?.path ? { id: $json.id, name: $json.name, path: $json.path, alt: article.title } : null;\nreturn { json: { ...article, postiz_payload: {\n  type: 'draft',\n  date: article.scheduled,\n  shortLink: false,\n  tags: [],\n  posts: [{\n    integration: { id: $env.POSTIZ_LINKEDIN_PAGE_INTEGRATION_ID },\n    settings: { __type: 'linkedin-page', link_preview: true, post_as_images_carousel: false },\n    value: [{ content: article.content, image: uploaded ? [uploaded] : [], delay: 0 }]\n  }]\n} } };"
+      },
+      "id": "a3408752-aee1-4e91-99ba-68b414e259d6",
+      "name": "Build Postiz payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://postiz.multiplusonline.nl/api/public/v1/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.postiz_payload }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "a20a999f-9420-4ad6-81cf-59f75101cedb",
+      "name": "Create Postiz draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1560, 0],
+      "credentials": { "httpHeaderAuth": { "name": "Postiz Public API" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "postiz_article_imports",
+          "mode": "name"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "event_key",
+              "condition": "eq",
+              "keyValue": "={{ $('Prepare draft').item.json.event_key }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_key": "={{ $('Prepare draft').item.json.event_key }}",
+            "site_id": "={{ $('Prepare draft').item.json.site_id }}",
+            "post_id": "={{ $('Prepare draft').item.json.post_id }}",
+            "canonical_url": "={{ $('Prepare draft').item.json.canonical_url }}",
+            "postiz_post_id": "={{ $json[0]?.postId || $json.postId || '' }}",
+            "status": "created",
+            "attempts": "={{ ($('Merge import state').item.json.attempts || 0) + 1 }}",
+            "last_error": "",
+            "created_at": "={{ $('Merge import state').item.json.created_at || $now.toISO() }}",
+            "updated_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "e5189f3d-12d3-4512-868a-99a92e31ce91",
+      "name": "Record successful import",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [1800, -80]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "postiz_article_imports",
+          "mode": "name"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "event_key",
+              "condition": "eq",
+              "keyValue": "={{ $('Prepare draft').item.json.event_key }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_key": "={{ $('Prepare draft').item.json.event_key }}",
+            "site_id": "={{ $('Prepare draft').item.json.site_id }}",
+            "post_id": "={{ $('Prepare draft').item.json.post_id }}",
+            "canonical_url": "={{ $('Prepare draft').item.json.canonical_url }}",
+            "postiz_post_id": "",
+            "status": "failed",
+            "attempts": "={{ ($('Merge import state').item.json.attempts || 0) + 1 }}",
+            "last_error": "={{ $json.message || $json.error?.message || JSON.stringify($json).slice(0, 1000) }}",
+            "created_at": "={{ $('Merge import state').item.json.created_at || $now.toISO() }}",
+            "updated_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "4bd7b9a8-edb2-4ca3-9b3d-f485481dbbef",
+      "name": "Record failed import",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [1800, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ Number($json.attempts || 0) }}",
+              "rightValue": 3,
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "df0fd0c8-e2b9-4f0b-9dc0-3bf2724353aa",
+      "name": "Third failed workflow attempt",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2040, 100]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Postiz Info <noreply@multiplusonline.nl>",
+        "toEmail": "={{ $env.POSTIZ_ALERT_EMAIL }}",
+        "subject": "={{ 'Postiz-import mislukt: ' + $('Prepare draft').item.json.title }}",
+        "emailFormat": "text",
+        "text": "={{ 'Het artikel kon na drie pogingen niet als Postiz-concept worden aangemaakt.\\n\\nArtikel: ' + $('Prepare draft').item.json.canonical_url + '\\nFout: ' + ($json.last_error || 'Onbekende fout') + '\\nUitvoering: ' + $execution.id }}",
+        "options": {}
+      },
+      "id": "23fc4377-49c5-4a37-8628-706c4f364b60",
+      "name": "Send failure email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2280, 100],
+      "credentials": { "smtp": { "name": "Brevo SMTP" } }
+    }
+  ],
+  "connections": {
+    "WordPress webhook": {
+      "main": [[{ "node": "Verify HMAC", "type": "main", "index": 0 }]]
+    },
+    "Verify HMAC": {
+      "main": [[{ "node": "Accept webhook", "type": "main", "index": 0 }]]
+    },
+    "Accept webhook": {
+      "main": [
+        [{ "node": "Normalize webhook article", "type": "main", "index": 0 }]
+      ]
+    },
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch recent WordPress articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch recent WordPress articles": {
+      "main": [
+        [{ "node": "Normalize polled articles", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize webhook article": {
+      "main": [
+        [
+          { "node": "Get import state", "type": "main", "index": 0 },
+          { "node": "Merge import state", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Normalize polled articles": {
+      "main": [
+        [
+          { "node": "Get import state", "type": "main", "index": 0 },
+          { "node": "Merge import state", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get import state": {
+      "main": [[{ "node": "Merge import state", "type": "main", "index": 1 }]]
+    },
+    "Merge import state": {
+      "main": [[{ "node": "Needs processing", "type": "main", "index": 0 }]]
+    },
+    "Needs processing": {
+      "main": [[{ "node": "Prepare draft", "type": "main", "index": 0 }], []]
+    },
+    "Prepare draft": {
+      "main": [[{ "node": "Has featured image", "type": "main", "index": 0 }]]
+    },
+    "Has featured image": {
+      "main": [
+        [{ "node": "Upload featured image", "type": "main", "index": 0 }],
+        [{ "node": "Warn about missing image", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upload featured image": {
+      "main": [
+        [{ "node": "Image upload succeeded", "type": "main", "index": 0 }]
+      ]
+    },
+    "Image upload succeeded": {
+      "main": [
+        [{ "node": "Build Postiz payload", "type": "main", "index": 0 }],
+        [{ "node": "Warn about missing image", "type": "main", "index": 0 }]
+      ]
+    },
+    "Warn about missing image": {
+      "main": [[{ "node": "Build Postiz payload", "type": "main", "index": 0 }]]
+    },
+    "Build Postiz payload": {
+      "main": [[{ "node": "Create Postiz draft", "type": "main", "index": 0 }]]
+    },
+    "Create Postiz draft": {
+      "main": [
+        [{ "node": "Record successful import", "type": "main", "index": 0 }],
+        [{ "node": "Record failed import", "type": "main", "index": 0 }]
+      ]
+    },
+    "Record failed import": {
+      "main": [
+        [
+          {
+            "node": "Third failed workflow attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Third failed workflow attempt": {
+      "main": [
+        [{ "node": "Send failure email", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Amsterdam",
+    "concurrency": 1
+  },
+  "versionId": "a8ab9684-d4f4-4107-b5bc-2bc48f4ec7fd",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}
